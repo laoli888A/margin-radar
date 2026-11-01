@@ -9,7 +9,6 @@ WEBHOOK_URL = os.getenv('FEISHU_WEBHOOK')
 
 def get_margin_and_volume_data():
     try:
-        # 1. 抓取两融数据
         df_sh = ak.macro_china_market_margin_sh()
         df_sz = ak.macro_china_market_margin_sz()
         
@@ -25,11 +24,8 @@ def get_margin_and_volume_data():
                 
         df['变动'] = df['融资余额'].diff()
         
-        # 2. 【终极修复】：用新浪指数实时行情接口获取当天的真实总成交额
         df_idx = ak.stock_zh_index_spot_sina()
-        # 筛选出上证指数和深证成指
         target_idx = df_idx[df_idx['代码'].isin(['sh000001', 'sz399001'])]
-        # 将成交额相加（单位转为亿元）
         total_amount = target_idx['成交额'].sum() / 1e8
         
         df.loc[df.index[-1], '全市场成交额'] = total_amount
@@ -70,6 +66,12 @@ def analyze_and_push(df):
     else:
         ratio_text = "数据缺失"
 
+    # 【优化点】：自动把成交额换算成“万亿”或者“亿”
+    if total_vol >= 10000:
+        vol_text = f"{total_vol / 10000:.2f} 万亿元"
+    else:
+        vol_text = f"{total_vol:.2f} 亿元"
+
     if change > upper:
         signal = "🔥 **情绪过热**：单日流入突破2倍标准差，警惕追高。"
     elif change < lower:
@@ -84,7 +86,7 @@ def analyze_and_push(df):
             "elements": [
                 {"tag": "div", "text": {"tag": "lark_md", "content": f"**日期**：{date_str}\n**两融余额**：{balance:.2f} 亿元\n**较前日变动**：{change:+.2f} 亿元\n**信号**：{signal}"}},
                 {"tag": "hr"},
-                {"tag": "div", "text": {"tag": "lark_md", "content": f"**🌡️ 融资买入占比**：{ratio_text}\n*(注：占比>10%过热，<7.5%低迷)*\n**今日全市场成交额**：{total_vol:.2f} 亿元"}},
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"**🌡️ 融资买入占比**：{ratio_text}\n*(注：占比>10%过热，<7.5%低迷)*\n**今日全市场成交额**：{vol_text}"}},
                 {"tag": "hr"},
                 {"tag": "note", "elements": [{"tag": "plain_text", "content": "本内容仅为盘面数据监控，不构成任何投资建议。"}]}
             ]
