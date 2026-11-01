@@ -7,14 +7,13 @@ import os
 
 WEBHOOK_URL = os.getenv('FEISHU_WEBHOOK')
 
-def get_margin_and_volume_data():
+def get_margin_data():
+    """获取两融和占比"""
     try:
         df_sh = ak.macro_china_market_margin_sh()
         df_sz = ak.macro_china_market_margin_sz()
-        
         df_sh = df_sh[['日期', '融资余额', '融资买入额']].copy()
         df_sz = df_sz[['日期', '融资余额', '融资买入额']].copy()
-        
         df = pd.concat([df_sh, df_sz]).groupby('日期').sum().reset_index()
         df = df.sort_values('日期').reset_index(drop=True)
         
@@ -27,26 +26,78 @@ def get_margin_and_volume_data():
         df_idx = ak.stock_zh_index_spot_sina()
         target_idx = df_idx[df_idx['代码'].isin(['sh000001', 'sz399001'])]
         total_amount = target_idx['成交额'].sum() / 1e8
-        
         df.loc[df.index[-1], '全市场成交额'] = total_amount
-        
         return df
     except Exception as e:
-        print(f"抓取失败: {e}")
+        print(f"两融数据抓取失败: {e}")
         return None
 
-def analyze_and_push(df):
-    if df is None or len(df) < 20:
-        print("数据不足或抓取失败，退出程序。")
+def get_trend_data():
+    """获取上证指数趋势 (MA20/MA60)"""
+    try:
+        df = ak.stock_zh_index_daily(symbol="sh000001")
+        df['MA20'] = df['close'].rolling(window=20).mean()
+        df['MA60'] = df['close'].rolling(window=60).mean()
+        latest = df.iloc[-1]
+        close = latest['close']
+        ma20 = latest['MA20']
+        ma60 = latest['MA60']
+        
+        if close > ma20 and ma20 > ma60:
+            return "🟢 **多头排列** (站上20日及60日线，主升浪特征)"
+        elif close < ma20 and close < ma60:
+            return "🔴 **空头排列** (跌破20日及60日线，防守为主)"
+        else:
+            return "🟡 **震荡趋势** (均线交织，方向不明)"
+    except Exception as e:
+        return f"❌ 趋势抓取失败: {e}"
+
+def get_etf_data():
+    """获取核心ETF底牌"""
+    etfs = {'sh510300': '沪深300', 'sh510500': '中证500', 'sh588000': '科创50'}
+    report = ""
+    for code, name in etfs.items():
+        try:
+            df = ak.fund_etf_hist_sina(symbol=code)
+            if len(df) >= 2:
+                vol_change = df.iloc[-1]['volume'] - df.iloc[-2]['volume']
+                signal = "放量申购" if vol_change > 0 else "缩量赎回"
+                report += f"- {name}ETF：{vol_change/10000:+.2f}万份 ({signal})\n"
+        except:
+            continue
+    return report if report else "⚠️ ETF数据获取失败\n"
+
+def get_industry_data():
+    """获取行业资金流向（防封禁）"""
+    try:
+        df = ak.stock_sector_fund_flow_rank(indicator="今日", sector_type="行业资金流")
+        top3 = df.sort_values(by="今日主力净流入-净额", ascending=False).head(3)
+        report = ""
+        for _, row in top3.iterrows():
+            name = row['名称']
+            amount = float(row['今日主力净流入-净额']) / 1e8 
+            report += f"- **{name}**：净流入 {amount:.2f} 亿\n"
+        return report
+    except Exception as e:
+        return "⚠️ 行业资金接口被限流，今日跳过\n"
+
+def analyze_and_push():
+    df_margin = get_margin_data()
+    trend_text = get_trend_data()
+    etf_text = get_etf_data()
+    industry_text = get_industry_data()
+
+    if df_margin is None or len(df_margin) < 20:
+        print("两融数据不足，退出。")
         return
 
-    recent_20 = df.tail(20)
+    recent_20 = df_margin.tail(20)
     mean = recent_20['变动'].mean()
     std = recent_20['变动'].std()
     upper = mean + 2 * std
     lower = mean - 2 * std
     
-    latest = df.iloc[-1]
+    latest = df_margin.iloc[-1]
     date_str = str(latest['日期'])
     balance = latest['融资余额']
     change = latest['变动']
@@ -66,28 +117,20 @@ def analyze_and_push(df):
     else:
         ratio_text = "数据缺失"
 
-    # 【优化点】：自动把成交额换算成“万亿”或者“亿”
-    if total_vol >= 10000:
-        vol_text = f"{total_vol / 10000:.2f} 万亿元"
-    else:
-        vol_text = f"{total_vol:.2f} 亿元"
-
-    if change > upper:
-        signal = "🔥 **情绪过热**：单日流入突破2倍标准差，警惕追高。"
-    elif change < lower:
-        signal = "⚠️ **恐慌极值**：单日流出突破2倍标准差，情绪极度低迷。"
-    else:
-        signal = "✅ **正常波动**：资金进出在合理范围内。"
+    vol_text = f"{total_vol / 10000:.2f} 万亿元" if total_vol >= 10000 else f"{total_vol:.2f} 亿元"
 
     card = {
         "msg_type": "interactive",
         "card": {
-            "header": {"title": {"tag": "plain_text", "content": "📊 两融与情绪温度计 (3.0)"}, "template": "blue"},
+            "header": {"title": {"tag": "plain_text", "content": "🚀 全息作战指挥屏 (4.0)"}, "template": "purple"},
             "elements": [
-                {"tag": "div", "text": {"tag": "lark_md", "content": f"**日期**：{date_str}\n**两融余额**：{balance:.2f} 亿元\n**较前日变动**：{change:+.2f} 亿元\n**信号**：{signal}"}},
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"**📅 日期**：{date_str}\n**📈 趋势**：{trend_text}"}},
                 {"tag": "hr"},
-                {"tag": "div", "text": {"tag": "lark_md", "content": f"**🌡️ 融资买入占比**：{ratio_text}\n*(注：占比>10%过热，<7.5%低迷)*\n**今日全市场成交额**：{vol_text}"}},
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"**🌡️ 杠杆情绪**\n- 融资买入占比：{ratio_text}\n- 全市场成交额：{vol_text}\n- 两融余额：{balance:.2f} 亿元 ({change:+.2f} 亿)"}},
                 {"tag": "hr"},
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"**🛡️ 国家队底牌 (今日份额变动)**\n{etf_text}"}},
+                {"tag": "hr"},
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"**🔥 主力资金主攻方向 (今日净流入前三)**\n{industry_text}"}},
                 {"tag": "note", "elements": [{"tag": "plain_text", "content": "本内容仅为盘面数据监控，不构成任何投资建议。"}]}
             ]
         }
@@ -97,5 +140,4 @@ def analyze_and_push(df):
     print("推送完成")
 
 if __name__ == "__main__":
-    df = get_margin_and_volume_data()
-    analyze_and_push(df)
+    analyze_and_push()
