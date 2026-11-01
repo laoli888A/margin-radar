@@ -28,18 +28,17 @@ def get_margin_and_volume_data():
                 
         df['变动'] = df['融资余额'].diff()
         
-        # 2. 抓取全市场成交额（用上证指数和深证成指的成交量近似代替）
-        # 新浪接口 sh000001, sz399001
+        # 2. 【修复核心】：抓取上证综指(sh000001)和深证综指(sz399106)的真实成交额(amount)
         df_sh_idx = ak.stock_zh_index_daily(symbol="sh000001")
-        df_sz_idx = ak.stock_zh_index_daily(symbol="sz399001")
+        df_sz_idx = ak.stock_zh_index_daily(symbol="sz399106")
         
-        # 取最后一天的成交量（单位：股/手，通常需除以1e8转亿）
-        vol_sh = df_sh_idx.iloc[-1]['volume'] / 1e8
-        vol_sz = df_sz_idx.iloc[-1]['volume'] / 1e8
-        total_volume = vol_sh + vol_sz
+        # amount字段单位是元，除以1e8转成亿元
+        amount_sh = df_sh_idx.iloc[-1]['amount'] / 1e8
+        amount_sz = df_sz_idx.iloc[-1]['amount'] / 1e8
+        total_amount = amount_sh + amount_sz
         
         # 把成交额拼接到 df 的最新行
-        df.loc[df.index[-1], '全市场成交额'] = total_volume
+        df.loc[df.index[-1], '全市场成交额'] = total_amount
         
         return df
     except Exception as e:
@@ -68,6 +67,7 @@ def analyze_and_push(df):
     
     if total_vol > 0:
         buy_ratio = (buy_amount / total_vol) * 100
+        # 这里正常情况应该是 7% - 12% 左右
         if buy_ratio > 10:
             ratio_signal = "🔥 交易过热（杠杆资金极度活跃）"
         elif buy_ratio < 7.5:
@@ -94,7 +94,7 @@ def analyze_and_push(df):
             "elements": [
                 {"tag": "div", "text": {"tag": "lark_md", "content": f"**日期**：{date_str}\n**两融余额**：{balance:.2f} 亿元\n**较前日变动**：{change:+.2f} 亿元\n**信号**：{signal}"}},
                 {"tag": "hr"},
-                {"tag": "div", "text": {"tag": "lark_md", "content": f"**🌡️ 融资买入占比**：{ratio_text}\n*(注：占比>10%过热，<7.5%低迷)*"}},
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"**🌡️ 融资买入占比**：{ratio_text}\n*(注：占比>10%过热，<7.5%低迷)*\n**今日全市场成交额**：{total_vol:.2f} 亿元"}},
                 {"tag": "hr"},
                 {"tag": "note", "elements": [{"tag": "plain_text", "content": "本内容仅为盘面数据监控，不构成任何投资建议。"}]}
             ]
