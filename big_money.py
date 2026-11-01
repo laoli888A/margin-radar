@@ -10,20 +10,33 @@ WEBHOOK_URL = os.getenv('FEISHU_WEBHOOK')
 def get_shebao_data():
     """获取最新季度的社保基金重仓股变动"""
     try:
-        # 使用机构报告持股接口，指定类型为“社保持仓”，date设为最近已披露的财报截止日
+        # 使用机构报告持股接口，指定类型为“社保持仓”
         df = ak.stock_report_fund_hold(symbol="社保持仓", date="20260630")
         
         if df is None or len(df) == 0:
             return "⚠️ 未查询到最新的社保基金重仓明细，可能该季度财报尚未更新。"
             
+        # 【核心修改】：把英文列名改成了新浪接口现在的中文列名
+        col_name = '股票简称'
+        col_share = '持股总数'
+        
+        # 确保字段存在，防止再次报错
+        if col_name not in df.columns or col_share not in df.columns:
+             return f"⚠️ 社保接口字段再次变化，当前包含的字段有：{list(df.columns)}"
+
         # 按持股总数降序排列，取前5
-        top_holdings = df.sort_values(by='share_hold_num', ascending=False).head(5)
+        top_holdings = df.sort_values(by=col_share, ascending=False).head(5)
         
         report = "### 🏦 社保基金最新底牌（前5大重仓）\n"
         for _, row in top_holdings.iterrows():
-            stock_name = row.get('stock_name', '未知')
-            hold_num = row.get('share_hold_num', 0)
-            report += f"- **{stock_name}**：持股约 {hold_num / 10000:.2f} 万股\n"
+            stock_name = str(row[col_name])
+            try:
+                # 尝试转换为数字计算万股
+                hold_num = float(row[col_share])
+                report += f"- **{stock_name}**：持股约 {hold_num / 10000:.2f} 万股\n"
+            except:
+                # 如果数据格式奇特，直接原样显示
+                report += f"- **{stock_name}**：持股数 {row[col_share]}\n"
         return report
         
     except Exception as e:
@@ -32,7 +45,7 @@ def get_shebao_data():
 def get_etf_data():
     """获取汇金核心宽基ETF份额变动（新浪数据源）"""
     try:
-        # 改用新浪ETF历史数据接口，避开东财机房IP限流
+        # 【这部分刚才成功了，原封不动保留】
         df = ak.fund_etf_hist_sina(symbol="sh510300")
         
         if df is None or len(df) < 2:
@@ -41,7 +54,6 @@ def get_etf_data():
         latest = df.iloc[-1]
         prev = df.iloc[-2]
         
-        # 新浪接口字段通常为date, open, high, low, close, volume
         vol_change = latest['volume'] - prev['volume']
         date_str = str(latest['date'])
         
