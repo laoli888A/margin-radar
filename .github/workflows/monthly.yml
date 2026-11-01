@@ -1,0 +1,27 @@
+name: Monthly Big Money Radar
+
+on:
+  schedule:
+    # 每个月 1 号的早上 08:00 (UTC 0点) 自动运行一次
+    - cron: '0 0 1 * *'
+  workflow_dispatch: 
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run script
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        run: python big_money.py
