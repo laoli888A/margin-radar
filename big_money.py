@@ -10,44 +10,44 @@ WEBHOOK_URL = os.getenv('FEISHU_WEBHOOK')
 def get_shebao_data():
     """获取最新季度的社保基金重仓股变动"""
     try:
-        # 20263 代表2026年三季报
-        quarter = "20263" 
-        df = ak.stock_institute_hold(quarter=quarter)
+        # 使用机构报告持股接口，指定类型为“社保持仓”，date设为最近已披露的财报截止日
+        df = ak.stock_report_fund_hold(symbol="社保持仓", date="20260630")
         
-        # 筛选出社保基金重仓的数据
-        shebao_df = df[df['机构名称'].str.contains('社保', na=False)]
-        
-        if len(shebao_df) == 0:
-            return "⚠️ 未查询到最新的社保基金重仓明细，可能财报尚未更新。"
+        if df is None or len(df) == 0:
+            return "⚠️ 未查询到最新的社保基金重仓明细，可能该季度财报尚未更新。"
             
-        # 按持股数降序排列，取前5
-        top_holdings = shebao_df.sort_values(by='持股数', ascending=False).head(5)
+        # 按持股总数降序排列，取前5
+        top_holdings = df.sort_values(by='share_hold_num', ascending=False).head(5)
         
         report = "### 🏦 社保基金最新底牌（前5大重仓）\n"
         for _, row in top_holdings.iterrows():
-            report += f"- **{row.get('股票简称', '未知')}**：持股约 {row.get('持股数', 0) / 10000:.2f} 万股\n"
+            stock_name = row.get('stock_name', '未知')
+            hold_num = row.get('share_hold_num', 0)
+            report += f"- **{stock_name}**：持股约 {hold_num / 10000:.2f} 万股\n"
         return report
         
     except Exception as e:
-        return f"❌ 社保数据抓取失败（接口可能需更新）: {e}"
+        return f"❌ 社保数据抓取失败: {e}"
 
 def get_etf_data():
-    """获取汇金最爱买的宽基ETF份额变动"""
+    """获取汇金核心宽基ETF份额变动（新浪数据源）"""
     try:
-        # 抓取华泰柏瑞沪深300ETF（510300）的数据
-        df = ak.fund_etf_hist_em(symbol="510300", period="daily", start_date="20260901", end_date="20261025")
+        # 改用新浪ETF历史数据接口，避开东财机房IP限流
+        df = ak.fund_etf_hist_sina(symbol="sh510300")
         
-        if len(df) < 2:
+        if df is None or len(df) < 2:
             return "⚠️ ETF数据不足。"
             
         latest = df.iloc[-1]
         prev = df.iloc[-2]
         
-        vol_change = latest['成交量'] - prev['成交量']
+        # 新浪接口字段通常为date, open, high, low, close, volume
+        vol_change = latest['volume'] - prev['volume']
+        date_str = str(latest['date'])
         
         report = "### 🛡️ 国家队阵地（510300 沪深300ETF）\n"
-        report += f"- **最新交易日**：{latest['日期']}\n"
-        report += f"- **近期成交变动**：{vol_change:.2f}\n"
+        report += f"- **最新交易日**：{date_str}\n"
+        report += f"- **成交/份额变动**：{vol_change:+.2f}\n"
         
         if vol_change > 0:
             report += "- **盘面信号**：放量增加，疑似有大资金进场托底。\n"
