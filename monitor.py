@@ -5,39 +5,33 @@ from datetime import datetime
 import numpy as np
 import os
 
-# 获取飞书地址
 WEBHOOK_URL = os.getenv('FEISHU_WEBHOOK')
 
 def get_margin_and_volume_data():
     try:
-        # 1. 抓取沪深两融数据（新浪接口）
+        # 1. 抓取两融数据
         df_sh = ak.macro_china_market_margin_sh()
         df_sz = ak.macro_china_market_margin_sz()
         
-        # 提取日期、融资余额、融资买入额
         df_sh = df_sh[['日期', '融资余额', '融资买入额']].copy()
         df_sz = df_sz[['日期', '融资余额', '融资买入额']].copy()
         
         df = pd.concat([df_sh, df_sz]).groupby('日期').sum().reset_index()
         df = df.sort_values('日期').reset_index(drop=True)
         
-        # 单位转成亿元
         for col in ['融资余额', '融资买入额']:
             if df[col].max() > 1e8:
                 df[col] = df[col] / 1e8
                 
         df['变动'] = df['融资余额'].diff()
         
-        # 2. 【修复核心】：抓取上证综指(sh000001)和深证综指(sz399106)的真实成交额(amount)
-        df_sh_idx = ak.stock_zh_index_daily(symbol="sh000001")
-        df_sz_idx = ak.stock_zh_index_daily(symbol="sz399106")
+        # 2. 【终极修复】：用新浪指数实时行情接口获取当天的真实总成交额
+        df_idx = ak.stock_zh_index_spot_sina()
+        # 筛选出上证指数和深证成指
+        target_idx = df_idx[df_idx['代码'].isin(['sh000001', 'sz399001'])]
+        # 将成交额相加（单位转为亿元）
+        total_amount = target_idx['成交额'].sum() / 1e8
         
-        # amount字段单位是元，除以1e8转成亿元
-        amount_sh = df_sh_idx.iloc[-1]['amount'] / 1e8
-        amount_sz = df_sz_idx.iloc[-1]['amount'] / 1e8
-        total_amount = amount_sh + amount_sz
-        
-        # 把成交额拼接到 df 的最新行
         df.loc[df.index[-1], '全市场成交额'] = total_amount
         
         return df
@@ -61,24 +55,21 @@ def analyze_and_push(df):
     balance = latest['融资余额']
     change = latest['变动']
     
-    # 计算融资买入占比
     buy_amount = latest['融资买入额']
     total_vol = latest.get('全市场成交额', 0)
     
     if total_vol > 0:
         buy_ratio = (buy_amount / total_vol) * 100
-        # 这里正常情况应该是 7% - 12% 左右
         if buy_ratio > 10:
-            ratio_signal = "🔥 交易过热（杠杆资金极度活跃）"
+            ratio_signal = "🔥 交易过热"
         elif buy_ratio < 7.5:
-            ratio_signal = "❄️ 情绪低迷（杠杆资金装死中）"
+            ratio_signal = "❄️ 情绪低迷"
         else:
             ratio_signal = "⚖️ 情绪温和"
         ratio_text = f"{buy_ratio:.2f}% ({ratio_signal})"
     else:
         ratio_text = "数据缺失"
 
-    # 判断两融信号
     if change > upper:
         signal = "🔥 **情绪过热**：单日流入突破2倍标准差，警惕追高。"
     elif change < lower:
@@ -86,7 +77,6 @@ def analyze_and_push(df):
     else:
         signal = "✅ **正常波动**：资金进出在合理范围内。"
 
-    # 组装飞书卡片
     card = {
         "msg_type": "interactive",
         "card": {
