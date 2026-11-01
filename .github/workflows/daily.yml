@@ -1,0 +1,27 @@
+name: Daily Margin Radar
+
+on:
+  schedule:
+    # 北京时间下午 16:30 是 UTC 早上 08:30。周一到周五运行
+    - cron: '30 8 * * 1-5'
+  workflow_dispatch: # 允许手动点击测试
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run script
+        env:
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
+        run: python monitor.py
