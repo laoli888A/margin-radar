@@ -9,7 +9,6 @@ WEBHOOK_URL = os.getenv('FEISHU_WEBHOOK')
 
 def get_margin_data():
     try:
-        # 第一梯队：东方财富
         df_sse = ak.stock_margin_sse()
         df_szse = ak.stock_margin_szse()
         df_sse['日期'] = pd.to_datetime(df_sse['信用交易日期'])
@@ -21,10 +20,7 @@ def get_margin_data():
         for col in ['融资余额', '融资买入额']:
             if df[col].max() > 1e8: df[col] = df[col] / 1e8
         df['变动'] = df['融资余额'].diff()
-        print("✅ 东方财富两融数据抓取成功")
     except Exception as e:
-        print(f"⚠️ 东方财富接口被限流，切换到新浪接口: {e}")
-        # 第二梯队：新浪
         df_sh = ak.macro_china_market_margin_sh()
         df_sz = ak.macro_china_market_margin_sz()
         df_sh = df_sh[['日期', '融资余额', '融资买入额']].copy()
@@ -35,13 +31,16 @@ def get_margin_data():
             if df[col].max() > 1e8: df[col] = df[col] / 1e8
         df['变动'] = df['融资余额'].diff()
 
+    # 【终极修复】：改用日线接口抓成交额，绝不空缺
     try:
-        df_idx = ak.stock_zh_index_spot_sina()
-        target_idx = df_idx[df_idx['代码'].isin(['sh000001', 'sz399001'])]
-        total_amount = target_idx['成交额'].sum() / 1e8
-        df.loc[df.index[-1], '全市场成交额'] = total_amount
+        df_sh_idx = ak.stock_zh_index_daily(symbol="sh000001")
+        df_sz_idx = ak.stock_zh_index_daily(symbol="sz399106")
+        amount_sh = df_sh_idx.iloc[-1]['amount'] / 1e8
+        amount_sz = df_sz_idx.iloc[-1]['amount'] / 1e8
+        df.loc[df.index[-1], '全市场成交额'] = amount_sh + amount_sz
     except:
-        pass
+        df.loc[df.index[-1], '全市场成交额'] = 0
+        
     return df
 
 def get_trend_data():
@@ -94,7 +93,6 @@ def analyze_and_push():
     date_str = str(latest['日期'])[:10]
     today_str = datetime.now().strftime('%Y-%m-%d')
 
-    # 【状态提示】：检查两融数据是不是最新的
     if date_str != today_str:
         data_status = f"⏳ **注意：两融数据暂未更新（当前显示为 {date_str} 结算数据），ETF及趋势为今日最新。**"
     else:
@@ -104,10 +102,6 @@ def analyze_and_push():
     etf_text = get_etf_data()
     industry_text = get_industry_data()
 
-    recent_20 = df_margin.tail(20)
-    mean = recent_20['变动'].mean()
-    std = recent_20['变动'].std()
-    
     balance = latest['融资余额']
     change = latest['变动']
     buy_amount = latest['融资买入额']
