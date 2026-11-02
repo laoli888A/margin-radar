@@ -33,26 +33,21 @@ def get_margin_data():
             if df[col].max() > 1e8: df[col] = df[col] / 1e8
         df['变动'] = df['融资余额'].diff()
 
-    # 【绝对精准匹配】：获取两融数据对应日期的全市场成交额
-    last_date_str = df.iloc[-1]['日期'].strftime('%Y-%m-%d')
+    # 【换回你要的实时接口】：优先东财实时，兜底新浪实时
+    total_amount = 0
     try:
-        # 使用东财日线接口，抓取上证指数和深证综指（代表整个深市）
-        df_sh_idx = ak.stock_zh_index_daily_em(symbol="sh000001")
-        df_sz_idx = ak.stock_zh_index_daily_em(symbol="sz399106")
-        
-        df_sh_idx['date'] = pd.to_datetime(df_sh_idx['date']).dt.strftime('%Y-%m-%d')
-        df_sz_idx['date'] = pd.to_datetime(df_sz_idx['date']).dt.strftime('%Y-%m-%d')
-        
-        # 精确提取那一天的成交额
-        amt_sh = df_sh_idx[df_sh_idx['date'] == last_date_str]['amount'].values[0]
-        amt_sz = df_sz_idx[df_sz_idx['date'] == last_date_str]['amount'].values[0]
-        
-        # 加起来转成亿元
-        df.loc[df.index[-1], '全市场成交额'] = (amt_sh + amt_sz) / 1e8
-    except Exception as e:
-        print(f"成交额抓取失败: {e}")
-        df.loc[df.index[-1], '全市场成交额'] = 0
-        
+        df_idx = ak.stock_zh_index_spot_em()
+        target_idx = df_idx[df_idx['名称'].isin(['上证指数', '深证成指'])]
+        total_amount = target_idx['成交额'].sum() / 1e8
+    except:
+        try:
+            df_idx = ak.stock_zh_index_spot_sina()
+            target_idx = df_idx[df_idx['代码'].isin(['sh000001', 'sz399001'])]
+            total_amount = target_idx['成交额'].sum() / 1e8
+        except:
+            pass
+            
+    df.loc[df.index[-1], '全市场成交额'] = total_amount
     return df
 
 def get_trend_data():
