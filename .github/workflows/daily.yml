@@ -2,9 +2,11 @@ name: Daily Margin Radar
 
 on:
   schedule:
-    # 北京时间下午 16:30 是 UTC 早上 08:30。周一到周五运行
+    # 第一波：北京时间下午 16:30 (UTC 08:30)，看当天的 ETF 异动和国家队底牌
     - cron: '30 8 * * 1-5'
-  workflow_dispatch: # 允许手动点击测试
+    # 第二波：北京时间晚上 22:00 (UTC 14:00)，等两融清算数据出来，看最终情绪占比
+    - cron: '0 14 * * 1-5'
+  workflow_dispatch: # 允许你随时在网页上手动点击运行
 
 jobs:
   build:
