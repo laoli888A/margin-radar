@@ -8,32 +8,23 @@ import os
 WEBHOOK_URL = os.getenv('FEISHU_WEBHOOK')
 
 def get_margin_data():
-    """优先尝试东方财富抓两融，失败则降级到新浪"""
     try:
-        # 【第一梯队】东方财富接口（速度快，下午6点更新）
+        # 第一梯队：东方财富
         df_sse = ak.stock_margin_sse()
         df_szse = ak.stock_margin_szse()
-        
         df_sse['日期'] = pd.to_datetime(df_sse['信用交易日期'])
         df_szse['日期'] = pd.to_datetime(df_szse['信用交易日期'])
-        
         df_sse = df_sse[['日期', '融资余额', '融资买入额']].copy()
         df_szse = df_szse[['日期', '融资余额', '融资买入额']].copy()
-        
         df = pd.concat([df_sse, df_szse]).groupby('日期').sum().reset_index()
         df = df.sort_values('日期').reset_index(drop=True)
-        
-        # 东财数据单位通常为元，转为亿元
         for col in ['融资余额', '融资买入额']:
-            if df[col].max() > 1e8:
-                df[col] = df[col] / 1e8
-                
+            if df[col].max() > 1e8: df[col] = df[col] / 1e8
         df['变动'] = df['融资余额'].diff()
         print("✅ 东方财富两融数据抓取成功")
-        
     except Exception as e:
         print(f"⚠️ 东方财富接口被限流，切换到新浪接口: {e}")
-        # 【第二梯队】新浪接口（备胎）
+        # 第二梯队：新浪
         df_sh = ak.macro_china_market_margin_sh()
         df_sz = ak.macro_china_market_margin_sz()
         df_sh = df_sh[['日期', '融资余额', '融资买入额']].copy()
@@ -41,11 +32,9 @@ def get_margin_data():
         df = pd.concat([df_sh, df_sz]).groupby('日期').sum().reset_index()
         df = df.sort_values('日期').reset_index(drop=True)
         for col in ['融资余额', '融资买入额']:
-            if df[col].max() > 1e8:
-                df[col] = df[col] / 1e8
+            if df[col].max() > 1e8: df[col] = df[col] / 1e8
         df['变动'] = df['融资余额'].diff()
 
-    # 抓取全市场成交额（新浪）
     try:
         df_idx = ak.stock_zh_index_spot_sina()
         target_idx = df_idx[df_idx['代码'].isin(['sh000001', 'sz399001'])]
@@ -53,29 +42,22 @@ def get_margin_data():
         df.loc[df.index[-1], '全市场成交额'] = total_amount
     except:
         pass
-        
     return df
 
 def get_trend_data():
-    """获取上证指数趋势 (MA20/MA60)"""
     try:
         df = ak.stock_zh_index_daily(symbol="sh000001")
         df['MA20'] = df['close'].rolling(window=20).mean()
         df['MA60'] = df['close'].rolling(window=60).mean()
         latest = df.iloc[-1]
         close, ma20, ma60 = latest['close'], latest['MA20'], latest['MA60']
-        
-        if close > ma20 and ma20 > ma60:
-            return "🟢 **多头排列** (站上20日及60日线，主升浪特征)"
-        elif close < ma20 and close < ma60:
-            return "🔴 **空头排列** (跌破20日及60日线，防守为主)"
-        else:
-            return "🟡 **震荡趋势** (均线交织，方向不明)"
+        if close > ma20 and ma20 > ma60: return "🟢 **多头排列** (站上20日及60日线)"
+        elif close < ma20 and close < ma60: return "🔴 **空头排列** (跌破20日及60日线，防守为主)"
+        else: return "🟡 **震荡趋势** (均线交织，方向不明)"
     except Exception as e:
         return f"❌ 趋势抓取失败: {e}"
 
 def get_etf_data():
-    """获取核心ETF底牌 (新浪)"""
     etfs = {'sh510300': '沪深300', 'sh510500': '中证500', 'sh588000': '科创50'}
     report = ""
     for code, name in etfs.items():
@@ -90,7 +72,6 @@ def get_etf_data():
     return report if report else "⚠️ ETF数据获取失败\n"
 
 def get_industry_data():
-    """获取行业资金流向（东财）"""
     try:
         df = ak.stock_sector_fund_flow_rank(indicator="今日", sector_type="行业资金流")
         top3 = df.sort_values(by="今日主力净流入-净额", ascending=False).head(3)
@@ -105,25 +86,30 @@ def get_industry_data():
 
 def analyze_and_push():
     df_margin = get_margin_data()
-    trend_text = get_trend_data()
-    etf_text = get_etf_data()
-    industry_text = get_industry_data()
-
     if df_margin is None or len(df_margin) < 20:
         print("两融数据不足，退出。")
         return
 
+    latest = df_margin.iloc[-1]
+    date_str = str(latest['日期'])[:10]
+    today_str = datetime.now().strftime('%Y-%m-%d')
+
+    # 【状态提示】：检查两融数据是不是最新的
+    if date_str != today_str:
+        data_status = f"⏳ **注意：两融数据暂未更新（当前显示为 {date_str} 结算数据），ETF及趋势为今日最新。**"
+    else:
+        data_status = f"✅ **数据已全部更新至今日。**"
+
+    trend_text = get_trend_data()
+    etf_text = get_etf_data()
+    industry_text = get_industry_data()
+
     recent_20 = df_margin.tail(20)
     mean = recent_20['变动'].mean()
     std = recent_20['变动'].std()
-    upper = mean + 2 * std
-    lower = mean - 2 * std
     
-    latest = df_margin.iloc[-1]
-    date_str = str(latest['日期'])[:10]  # 确保日期格式干净
     balance = latest['融资余额']
     change = latest['变动']
-    
     buy_amount = latest['融资买入额']
     total_vol = latest.get('全市场成交额', 0)
     
@@ -141,22 +127,24 @@ def analyze_and_push():
     card = {
         "msg_type": "interactive",
         "card": {
-            "header": {"title": {"tag": "plain_text", "content": "🚀 全息作战指挥屏 (4.1 极速版)"}, "template": "purple"},
+            "header": {"title": {"tag": "plain_text", "content": "🚀 全息作战指挥屏 (4.1)"}, "template": "purple"},
             "elements": [
-                {"tag": "div", "text": {"tag": "lark_md", "content": f"**📅 日期**：{date_str}\n**📈 趋势**：{trend_text}"}},
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"**📅 日期**：{date_str}\n{data_status}"}},
+                {"tag": "hr"},
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"**📈 趋势**：{trend_text}"}},
                 {"tag": "hr"},
                 {"tag": "div", "text": {"tag": "lark_md", "content": f"**🌡️ 杠杆情绪**\n- 融资买入占比：{ratio_text}\n- 全市场成交额：{vol_text}\n- 两融余额：{balance:.2f} 亿元 ({change:+.2f} 亿)"}},
                 {"tag": "hr"},
                 {"tag": "div", "text": {"tag": "lark_md", "content": f"**🛡️ 国家队底牌 (今日份额变动)**\n{etf_text}"}},
                 {"tag": "hr"},
-                {"tag": "div", "text": {"tag": "lark_md", "content": f"**🔥 主力资金主攻方向 (今日净流入前三)**\n{industry_text}"}},
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"**🔥 主力资金主攻方向**\n{industry_text}"}},
                 {"tag": "note", "elements": [{"tag": "plain_text", "content": "本内容仅为盘面数据监控，不构成任何投资建议。"}]}
             ]
         }
     }
 
     requests.post(WEBHOOK_URL, json=card)
-    print("推送完成")
+    print(f"推送完成。当前两融数据日期：{date_str}")
 
 if __name__ == "__main__":
     analyze_and_push()
