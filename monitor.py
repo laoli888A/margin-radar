@@ -9,6 +9,7 @@ WEBHOOK_URL = os.getenv('FEISHU_WEBHOOK')
 
 def get_margin_data():
     try:
+        # 第一梯队：东方财富两融
         df_sse = ak.stock_margin_sse()
         df_szse = ak.stock_margin_szse()
         df_sse['日期'] = pd.to_datetime(df_sse['信用交易日期'])
@@ -21,6 +22,7 @@ def get_margin_data():
             if df[col].max() > 1e8: df[col] = df[col] / 1e8
         df['变动'] = df['融资余额'].diff()
     except Exception as e:
+        # 第二梯队：新浪两融
         df_sh = ak.macro_china_market_margin_sh()
         df_sz = ak.macro_china_market_margin_sz()
         df_sh = df_sh[['日期', '融资余额', '融资买入额']].copy()
@@ -31,15 +33,21 @@ def get_margin_data():
             if df[col].max() > 1e8: df[col] = df[col] / 1e8
         df['变动'] = df['融资余额'].diff()
 
-    # 【终极修复】：改用日线接口抓成交额，绝不空缺
+    # 【终极修复】：换成东方财富的指数实时行情接口，晚上也能抓到当天的成交额
     try:
-        df_sh_idx = ak.stock_zh_index_daily(symbol="sh000001")
-        df_sz_idx = ak.stock_zh_index_daily(symbol="sz399106")
-        amount_sh = df_sh_idx.iloc[-1]['amount'] / 1e8
-        amount_sz = df_sz_idx.iloc[-1]['amount'] / 1e8
-        df.loc[df.index[-1], '全市场成交额'] = amount_sh + amount_sz
+        df_idx = ak.stock_zh_index_spot_em()
+        target_idx = df_idx[df_idx['名称'].isin(['上证指数', '深证成指'])]
+        total_amount = target_idx['成交额'].sum() / 1e8
+        df.loc[df.index[-1], '全市场成交额'] = total_amount
     except:
-        df.loc[df.index[-1], '全市场成交额'] = 0
+        # 如果东财也抓不到，就用新浪的实时接口兜底
+        try:
+            df_idx = ak.stock_zh_index_spot_sina()
+            target_idx = df_idx[df_idx['代码'].isin(['sh000001', 'sz399001'])]
+            total_amount = target_idx['成交额'].sum() / 1e8
+            df.loc[df.index[-1], '全市场成交额'] = total_amount
+        except:
+            df.loc[df.index[-1], '全市场成交额'] = 0
         
     return df
 
