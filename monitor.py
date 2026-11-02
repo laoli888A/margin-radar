@@ -8,29 +8,53 @@ import os
 WEBHOOK_URL = os.getenv('FEISHU_WEBHOOK')
 
 def get_margin_data():
-    """获取两融和占比"""
+    """优先尝试东方财富抓两融，失败则降级到新浪"""
     try:
+        # 【第一梯队】东方财富接口（速度快，下午6点更新）
+        df_sse = ak.stock_margin_sse()
+        df_szse = ak.stock_margin_szse()
+        
+        df_sse['日期'] = pd.to_datetime(df_sse['信用交易日期'])
+        df_szse['日期'] = pd.to_datetime(df_szse['信用交易日期'])
+        
+        df_sse = df_sse[['日期', '融资余额', '融资买入额']].copy()
+        df_szse = df_szse[['日期', '融资余额', '融资买入额']].copy()
+        
+        df = pd.concat([df_sse, df_szse]).groupby('日期').sum().reset_index()
+        df = df.sort_values('日期').reset_index(drop=True)
+        
+        # 东财数据单位通常为元，转为亿元
+        for col in ['融资余额', '融资买入额']:
+            if df[col].max() > 1e8:
+                df[col] = df[col] / 1e8
+                
+        df['变动'] = df['融资余额'].diff()
+        print("✅ 东方财富两融数据抓取成功")
+        
+    except Exception as e:
+        print(f"⚠️ 东方财富接口被限流，切换到新浪接口: {e}")
+        # 【第二梯队】新浪接口（备胎）
         df_sh = ak.macro_china_market_margin_sh()
         df_sz = ak.macro_china_market_margin_sz()
         df_sh = df_sh[['日期', '融资余额', '融资买入额']].copy()
         df_sz = df_sz[['日期', '融资余额', '融资买入额']].copy()
         df = pd.concat([df_sh, df_sz]).groupby('日期').sum().reset_index()
         df = df.sort_values('日期').reset_index(drop=True)
-        
         for col in ['融资余额', '融资买入额']:
             if df[col].max() > 1e8:
                 df[col] = df[col] / 1e8
-                
         df['变动'] = df['融资余额'].diff()
-        
+
+    # 抓取全市场成交额（新浪）
+    try:
         df_idx = ak.stock_zh_index_spot_sina()
         target_idx = df_idx[df_idx['代码'].isin(['sh000001', 'sz399001'])]
         total_amount = target_idx['成交额'].sum() / 1e8
         df.loc[df.index[-1], '全市场成交额'] = total_amount
-        return df
-    except Exception as e:
-        print(f"两融数据抓取失败: {e}")
-        return None
+    except:
+        pass
+        
+    return df
 
 def get_trend_data():
     """获取上证指数趋势 (MA20/MA60)"""
@@ -39,9 +63,7 @@ def get_trend_data():
         df['MA20'] = df['close'].rolling(window=20).mean()
         df['MA60'] = df['close'].rolling(window=60).mean()
         latest = df.iloc[-1]
-        close = latest['close']
-        ma20 = latest['MA20']
-        ma60 = latest['MA60']
+        close, ma20, ma60 = latest['close'], latest['MA20'], latest['MA60']
         
         if close > ma20 and ma20 > ma60:
             return "🟢 **多头排列** (站上20日及60日线，主升浪特征)"
@@ -53,7 +75,7 @@ def get_trend_data():
         return f"❌ 趋势抓取失败: {e}"
 
 def get_etf_data():
-    """获取核心ETF底牌"""
+    """获取核心ETF底牌 (新浪)"""
     etfs = {'sh510300': '沪深300', 'sh510500': '中证500', 'sh588000': '科创50'}
     report = ""
     for code, name in etfs.items():
@@ -68,7 +90,7 @@ def get_etf_data():
     return report if report else "⚠️ ETF数据获取失败\n"
 
 def get_industry_data():
-    """获取行业资金流向（防封禁）"""
+    """获取行业资金流向（东财）"""
     try:
         df = ak.stock_sector_fund_flow_rank(indicator="今日", sector_type="行业资金流")
         top3 = df.sort_values(by="今日主力净流入-净额", ascending=False).head(3)
@@ -98,7 +120,7 @@ def analyze_and_push():
     lower = mean - 2 * std
     
     latest = df_margin.iloc[-1]
-    date_str = str(latest['日期'])
+    date_str = str(latest['日期'])[:10]  # 确保日期格式干净
     balance = latest['融资余额']
     change = latest['变动']
     
@@ -107,12 +129,9 @@ def analyze_and_push():
     
     if total_vol > 0:
         buy_ratio = (buy_amount / total_vol) * 100
-        if buy_ratio > 10:
-            ratio_signal = "🔥 交易过热"
-        elif buy_ratio < 7.5:
-            ratio_signal = "❄️ 情绪低迷"
-        else:
-            ratio_signal = "⚖️ 情绪温和"
+        if buy_ratio > 10: ratio_signal = "🔥 交易过热"
+        elif buy_ratio < 7.5: ratio_signal = "❄️ 情绪低迷"
+        else: ratio_signal = "⚖️ 情绪温和"
         ratio_text = f"{buy_ratio:.2f}% ({ratio_signal})"
     else:
         ratio_text = "数据缺失"
@@ -122,7 +141,7 @@ def analyze_and_push():
     card = {
         "msg_type": "interactive",
         "card": {
-            "header": {"title": {"tag": "plain_text", "content": "🚀 全息作战指挥屏 (4.0)"}, "template": "purple"},
+            "header": {"title": {"tag": "plain_text", "content": "🚀 全息作战指挥屏 (4.1 极速版)"}, "template": "purple"},
             "elements": [
                 {"tag": "div", "text": {"tag": "lark_md", "content": f"**📅 日期**：{date_str}\n**📈 趋势**：{trend_text}"}},
                 {"tag": "hr"},
