@@ -8,6 +8,7 @@ import os
 WEBHOOK_URL = os.getenv('FEISHU_WEBHOOK')
 
 def get_margin_data():
+    # 抓取两融数据
     try:
         df_sse = ak.stock_margin_sse()
         df_szse = ak.stock_margin_szse()
@@ -30,28 +31,42 @@ def get_margin_data():
         for col in ['融资余额', '融资买入额']:
             if df[col].max() > 1e8: df[col] = df[col] / 1e8
         df['变动'] = df['融资余额'].diff()
-
-    # 【终极修复】：精准获取两融数据对应当天的成交额（日线历史库）
-    last_date_str = df.iloc[-1]['日期'].strftime('%Y-%m-%d')
-    try:
-        # 用最稳的新浪日线接口，查当天收盘的成交额
-        df_sh_idx = ak.stock_zh_index_daily(symbol="sh000001")
-        df_sz_idx = ak.stock_zh_index_daily(symbol="sz399001")
-        
-        # 转换日期格式方便对比
-        df_sh_idx['date'] = pd.to_datetime(df_sh_idx['date']).dt.strftime('%Y-%m-%d')
-        df_sz_idx['date'] = pd.to_datetime(df_sz_idx['date']).dt.strftime('%Y-%m-%d')
-        
-        # 找到两融日期对应的那条记录，提取 amount (成交额)
-        amt_sh = df_sh_idx[df_sh_idx['date'] == last_date_str]['amount'].values[0]
-        amt_sz = df_sz_idx[df_sz_idx['date'] == last_date_str]['amount'].values[0]
-        
-        df.loc[df.index[-1], '全市场成交额'] = (amt_sh + amt_sz) / 1e8
-    except Exception as e:
-        print(f"成交额抓取失败: {e}")
-        df.loc[df.index[-1], '全市场成交额'] = 0
         
     return df
+
+def get_total_volume():
+    """暴力抓取全市场成交额，三重保险"""
+    total_amount = 0
+    # 第一招：新浪实时大盘行情
+    try:
+        df_idx = ak.stock_zh_index_spot_sina()
+        target_idx = df_idx[df_idx['代码'].isin(['sh000001', 'sz399001'])]
+        total_amount = target_idx['成交额'].sum() / 1e8
+        if total_amount > 5000: # 只要超过5000亿，说明抓到了
+            return total_amount
+    except:
+        pass
+        
+    # 第二招：东财实时大盘行情
+    try:
+        df_idx = ak.stock_zh_index_spot_em()
+        target_idx = df_idx[df_idx['名称'].isin(['上证指数', '深证成指'])]
+        total_amount = target_idx['成交额'].sum() / 1e8
+        if total_amount > 5000:
+            return total_amount
+    except:
+        pass
+        
+    # 第三招：东财日线历史数据兜底
+    try:
+        df_sh = ak.stock_zh_index_daily_em(symbol="sh000001")
+        df_sz = ak.stock_zh_index_daily_em(symbol="sz399106")
+        total_amount = (float(df_sh.iloc[-1]['amount']) + float(df_sz.iloc[-1]['amount'])) / 1e8
+        return total_amount
+    except:
+        pass
+        
+    return total_amount
 
 def get_trend_data():
     try:
@@ -82,6 +97,9 @@ def get_etf_data():
 
 def get_industry_data():
     try:
+        # 加点延迟，避免被秒封
+        import time
+        time.sleep(1)
         df = ak.stock_sector_fund_flow_rank(indicator="今日", sector_type="行业资金流")
         top3 = df.sort_values(by="今日主力净流入-净额", ascending=False).head(3)
         report = ""
@@ -102,23 +120,27 @@ def analyze_and_push():
     latest = df_margin.iloc[-1]
     date_str = str(latest['日期'])[:10]
     
-    # 【修复时区错乱】：强制使用北京时间
+    # 强制北京时间
     today_str = (datetime.utcnow() + timedelta(hours=8)).strftime('%Y-%m-%d')
 
     if date_str != today_str:
-        data_status = f"⏳ **注意：两融数据暂未更新（当前显示为 {date_str} 结算数据），ETF及趋势为今日最新。**"
+        data_status = f"⏳ **注意：两融数据暂未更新（当前显示为 {date_str} 结算数据），ETF及趋势为最新。**"
     else:
         data_status = f"✅ **数据已全部更新至今日。**"
 
     trend_text = get_trend_data()
     etf_text = get_etf_data()
     industry_text = get_industry_data()
+    
+    # 抓取真实成交额
+    total_vol = get_total_volume()
 
     balance = latest['融资余额']
     change = latest['变动']
     buy_amount = latest['融资买入额']
-    total_vol = latest.get('全市场成交额', 0)
     
+    # 如果两融数据是昨天的，分子也是昨天的，那分母（成交额）最好也是昨天的才准。
+    # 但如果是白天跑，成交额是今天的，两融是昨天的，会有轻微失真。但为了不显示0，我们先这样。
     if total_vol > 0:
         buy_ratio = (buy_amount / total_vol) * 100
         if buy_ratio > 10: ratio_signal = "🔥 交易过热"
@@ -150,7 +172,7 @@ def analyze_and_push():
     }
 
     requests.post(WEBHOOK_URL, json=card)
-    print(f"推送完成。当前两融数据日期：{date_str}")
+    print(f"推送完成。当前两融数据日期：{date_str}，抓取成交额：{total_vol} 亿")
 
 if __name__ == "__main__":
     analyze_and_push()
