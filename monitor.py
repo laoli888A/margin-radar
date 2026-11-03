@@ -1,7 +1,7 @@
 import akshare as ak
 import pandas as pd
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import numpy as np
 import os
 
@@ -9,7 +9,6 @@ WEBHOOK_URL = os.getenv('FEISHU_WEBHOOK')
 
 def get_margin_data():
     try:
-        # 第一梯队：东方财富两融
         df_sse = ak.stock_margin_sse()
         df_szse = ak.stock_margin_szse()
         df_sse['日期'] = pd.to_datetime(df_sse['信用交易日期'])
@@ -22,7 +21,6 @@ def get_margin_data():
             if df[col].max() > 1e8: df[col] = df[col] / 1e8
         df['变动'] = df['融资余额'].diff()
     except Exception as e:
-        # 第二梯队：新浪两融
         df_sh = ak.macro_china_market_margin_sh()
         df_sz = ak.macro_china_market_margin_sz()
         df_sh = df_sh[['日期', '融资余额', '融资买入额']].copy()
@@ -33,21 +31,26 @@ def get_margin_data():
             if df[col].max() > 1e8: df[col] = df[col] / 1e8
         df['变动'] = df['融资余额'].diff()
 
-    # 【换回你要的实时接口】：优先东财实时，兜底新浪实时
-    total_amount = 0
+    # 【终极修复】：精准获取两融数据对应当天的成交额（日线历史库）
+    last_date_str = df.iloc[-1]['日期'].strftime('%Y-%m-%d')
     try:
-        df_idx = ak.stock_zh_index_spot_em()
-        target_idx = df_idx[df_idx['名称'].isin(['上证指数', '深证成指'])]
-        total_amount = target_idx['成交额'].sum() / 1e8
-    except:
-        try:
-            df_idx = ak.stock_zh_index_spot_sina()
-            target_idx = df_idx[df_idx['代码'].isin(['sh000001', 'sz399001'])]
-            total_amount = target_idx['成交额'].sum() / 1e8
-        except:
-            pass
-            
-    df.loc[df.index[-1], '全市场成交额'] = total_amount
+        # 用最稳的新浪日线接口，查当天收盘的成交额
+        df_sh_idx = ak.stock_zh_index_daily(symbol="sh000001")
+        df_sz_idx = ak.stock_zh_index_daily(symbol="sz399001")
+        
+        # 转换日期格式方便对比
+        df_sh_idx['date'] = pd.to_datetime(df_sh_idx['date']).dt.strftime('%Y-%m-%d')
+        df_sz_idx['date'] = pd.to_datetime(df_sz_idx['date']).dt.strftime('%Y-%m-%d')
+        
+        # 找到两融日期对应的那条记录，提取 amount (成交额)
+        amt_sh = df_sh_idx[df_sh_idx['date'] == last_date_str]['amount'].values[0]
+        amt_sz = df_sz_idx[df_sz_idx['date'] == last_date_str]['amount'].values[0]
+        
+        df.loc[df.index[-1], '全市场成交额'] = (amt_sh + amt_sz) / 1e8
+    except Exception as e:
+        print(f"成交额抓取失败: {e}")
+        df.loc[df.index[-1], '全市场成交额'] = 0
+        
     return df
 
 def get_trend_data():
@@ -98,7 +101,9 @@ def analyze_and_push():
 
     latest = df_margin.iloc[-1]
     date_str = str(latest['日期'])[:10]
-    today_str = datetime.now().strftime('%Y-%m-%d')
+    
+    # 【修复时区错乱】：强制使用北京时间
+    today_str = (datetime.utcnow() + timedelta(hours=8)).strftime('%Y-%m-%d')
 
     if date_str != today_str:
         data_status = f"⏳ **注意：两融数据暂未更新（当前显示为 {date_str} 结算数据），ETF及趋势为今日最新。**"
