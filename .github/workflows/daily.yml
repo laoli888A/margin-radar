@@ -2,7 +2,9 @@ name: Daily Margin Radar
 
 on:
   schedule:
-    # 每天晚上 22:30 (UTC 14:30) 自动运行
+    # 1. 下午 16:30 (UTC 08:30) 自动运行：看当天 ETF 底牌和行业资金（最重要）
+    - cron: '30 8 * * 1-5'
+    # 2. 晚上 22:30 (UTC 14:30) 自动运行：两融结算数据更新，看最终全量版
     - cron: '30 14 * * 1-5'
   workflow_dispatch: # 允许手动点击测试
 
